@@ -1,0 +1,15 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+data/app.db
+data/cache/
+data/train.jsonl
+.DS_Store
+*.svg
+.streamlit/secrets.toml

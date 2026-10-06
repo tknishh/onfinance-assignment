@@ -1,0 +1,17 @@
+services:
+  kroki:
+    image: yuzutech/kroki
+    ports:
+      - "8000:8000"
+  app:
+    build: .
+    env_file: .env
+    environment:
+      - KROKI_URL=http://kroki:8000
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - kroki
+    command: streamlit run app.py --server.address 0.0.0.0
