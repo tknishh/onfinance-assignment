@@ -42,11 +42,19 @@ def _migrate(engine) -> None:
             for name, sql_type in columns.items():
                 if existing and name not in existing:
                     conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {sql_type}")
+        # Unique version numbers per conversation (idempotent on existing DBs).
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_designversion_conv_verno "
+            "ON designversion (conversation_id, version_no)"
+        )
 
 
 def init_db() -> None:
     Path("data").mkdir(parents=True, exist_ok=True)
     Path(get_settings().cache_dir).mkdir(parents=True, exist_ok=True)
+    # Import models so SQLModel.metadata knows every table.
+    import core.models  # noqa: F401
+
     engine = get_engine()
     SQLModel.metadata.create_all(engine)
     _migrate(engine)
@@ -55,7 +63,7 @@ def init_db() -> None:
 @contextmanager
 def get_session() -> Iterator[Session]:
     # expire_on_commit=False so attributes remain readable after commit
-    # (Streamlit often uses ORM rows outside the session block).
+    # (async handlers and SSE workers often read ORM rows outside the block).
     session = Session(get_engine(), expire_on_commit=False)
     try:
         yield session

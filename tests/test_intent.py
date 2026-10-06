@@ -21,10 +21,11 @@ def test_compose_prompt_numbered():
 def test_edit_empty_targets_becomes_revise():
     raw = FollowUpIntent(intent="edit_diagrams", instruction="fix something", target_kinds=[])
     with patch("core.intent.invoke_structured", new=AsyncMock(return_value=raw)):
-        result = asyncio.run(
+        result, recorder = asyncio.run(
             classify_followup("fix something", "prompt", ["sequence"], None)
         )
     assert result.intent == "revise"
+    assert recorder is not None
 
 
 def test_add_drops_existing_kinds():
@@ -34,7 +35,7 @@ def test_add_drops_existing_kinds():
         target_kinds=["sequence", "deployment"],
     )
     with patch("core.intent.invoke_structured", new=AsyncMock(return_value=raw)):
-        result = asyncio.run(
+        result, _ = asyncio.run(
             classify_followup("add deployment", "prompt", ["sequence"], None)
         )
     assert result.intent == "add_diagrams"
@@ -46,8 +47,9 @@ def test_classify_exception_defaults_to_revise():
         "core.intent.invoke_structured",
         new=AsyncMock(side_effect=RuntimeError("boom")),
     ):
-        result = asyncio.run(
+        result, recorder = asyncio.run(
             classify_followup("please update", "prompt", ["sequence"], None)
         )
     assert result.intent == "revise"
     assert result.instruction == "please update"
+    assert recorder is None

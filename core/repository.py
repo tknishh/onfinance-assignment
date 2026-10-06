@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session, col, select
 
 from core.models import (
@@ -71,10 +72,14 @@ def user_has_conversations(session: Session, user_id: str) -> bool:
     ).first() is not None
 
 
+def next_version_no(session: Session, conversation_id: int) -> int:
+    latest = latest_version(session, conversation_id)
+    return (latest.version_no + 1) if latest else 1
+
+
 def create_version(
     session: Session,
     conversation_id: int,
-    version_no: int,
     prompt: str,
     diagram_types: list[str],
     parent_version_id: Optional[int] = None,
@@ -82,22 +87,35 @@ def create_version(
     design_model: Optional[dict] = None,
     revisions: Optional[list[str]] = None,
     instruction: Optional[str] = None,
+    version_no: Optional[int] = None,
 ) -> DesignVersion:
-    version = DesignVersion(
-        conversation_id=conversation_id,
-        version_no=version_no,
-        prompt=prompt,
-        diagram_types=diagram_types,
-        parent_version_id=parent_version_id,
-        change_summary=change_summary,
-        design_model=design_model,
-        revisions=list(revisions or []),
-        instruction=instruction,
-    )
-    session.add(version)
-    session.commit()
-    session.refresh(version)
-    return version
+    """Allocate the next version_no with retries on unique-constraint races."""
+    last_err: Optional[Exception] = None
+    for _ in range(5):
+        no = version_no if version_no is not None else next_version_no(session, conversation_id)
+        version_no = None  # re-allocate on retry
+        version = DesignVersion(
+            conversation_id=conversation_id,
+            version_no=no,
+            prompt=prompt,
+            diagram_types=diagram_types,
+            parent_version_id=parent_version_id,
+            change_summary=change_summary,
+            design_model=design_model,
+            revisions=list(revisions or []),
+            instruction=instruction,
+        )
+        session.add(version)
+        try:
+            session.commit()
+            session.refresh(version)
+            return version
+        except IntegrityError as e:
+            session.rollback()
+            last_err = e
+    raise RuntimeError(
+        f"Could not allocate version for conversation {conversation_id}"
+    ) from last_err
 
 
 def latest_version(
@@ -235,9 +253,40 @@ def list_messages(session: Session, conversation_id: int) -> list[Message]:
         session.exec(
             select(Message)
             .where(Message.conversation_id == conversation_id)
-            .order_by(col(Message.created_at).asc())
+            .order_by(col(Message.created_at).asc(), col(Message.id).asc())
         ).all()
     )
+
+
+def conversation_owned_by(
+    session: Session, conversation_id: int, user_id: str
+) -> Optional[Conversation]:
+    conv = get_conversation(session, conversation_id)
+    if conv is None or conv.user_id != user_id:
+        return None
+    return conv
+
+
+def version_owned_by(
+    session: Session, version_id: int, user_id: str
+) -> Optional[DesignVersion]:
+    version = get_version(session, version_id)
+    if version is None:
+        return None
+    if conversation_owned_by(session, version.conversation_id, user_id) is None:
+        return None
+    return version
+
+
+def diagram_owned_by(
+    session: Session, diagram_id: int, user_id: str
+) -> Optional[Diagram]:
+    diagram = get_diagram(session, diagram_id)
+    if diagram is None:
+        return None
+    if version_owned_by(session, diagram.version_id, user_id) is None:
+        return None
+    return diagram
 
 
 def delete_conversation(session: Session, conversation_id: int) -> None:

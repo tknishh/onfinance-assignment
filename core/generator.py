@@ -205,17 +205,19 @@ def reuse_diagram(old: Diagram | object) -> GeneratedDiagram:
 
 
 async def run_parallel(
-    tasks: list[Awaitable[GeneratedDiagram]],
+    tasks: list[tuple[DiagramKind, Awaitable[GeneratedDiagram]]],
     on_done: Optional[Callable[[GeneratedDiagram], None]] = None,
 ) -> list[GeneratedDiagram]:
-    results: list[GeneratedDiagram] = []
-    wrapped = [asyncio.create_task(t) for t in tasks]  # type: ignore[arg-type]
-    for fut in asyncio.as_completed(wrapped):
+    """Run diagram coroutines in parallel; failures keep their original kind."""
+
+    async def _safe(
+        kind: DiagramKind, coro: Awaitable[GeneratedDiagram]
+    ) -> GeneratedDiagram:
         try:
-            item = await fut
+            return await coro
         except Exception as e:
-            item = GeneratedDiagram(
-                kind=DiagramKind.SEQUENCE,
+            return GeneratedDiagram(
+                kind=kind,
                 title="error",
                 plantuml="",
                 svg=None,
@@ -225,6 +227,11 @@ async def run_parallel(
                 latency_ms=0,
                 model=get_settings().gen_model,
             )
+
+    results: list[GeneratedDiagram] = []
+    wrapped = [asyncio.create_task(_safe(k, c)) for k, c in tasks]
+    for fut in asyncio.as_completed(wrapped):
+        item = await fut
         results.append(item)
         if on_done:
             res = on_done(item)

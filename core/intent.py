@@ -8,7 +8,7 @@ from core.cache import prompt_hash
 from core.config import get_settings
 from core.design_model import render_design_context
 from core.diagram_types import DiagramKind, normalize_types
-from core.llm import _get_sem, get_chat, invoke_structured
+from core.llm import invoke_structured, invoke_text
 from core.prompts import (
     system_answer,
     system_intent,
@@ -48,7 +48,7 @@ async def classify_followup(
     current_prompt: str,
     current_kinds: list[str],
     design: Optional[DesignModel],
-) -> FollowUpIntent:
+) -> tuple[FollowUpIntent, Optional[TrajectoryRecorder]]:
     settings = get_settings()
     recorder = TrajectoryRecorder(
         "intent",
@@ -66,7 +66,10 @@ async def classify_followup(
     try:
         intent = await invoke_structured("fast", FollowUpIntent, msgs, recorder)
     except Exception:
-        return FollowUpIntent(intent="revise", instruction=message, target_kinds=[])
+        return (
+            FollowUpIntent(intent="revise", instruction=message, target_kinds=[]),
+            None,
+        )
 
     kinds, _ = normalize_types(intent.target_kinds)
     target = [k.value for k in kinds]
@@ -75,7 +78,7 @@ async def classify_followup(
 
     if intent.intent in ("edit_diagrams", "add_diagrams", "remove_diagrams") and not target:
         intent.intent = "revise"
-        return intent
+        return intent, recorder
 
     if intent.intent == "add_diagrams":
         intent.target_kinds = [k for k in target if k not in present]
@@ -89,9 +92,7 @@ async def classify_followup(
             intent.intent = "revise"
             intent.target_kinds = []
 
-    # Attach recorder for orchestrator to save (via attribute)
-    intent._recorder = recorder  # type: ignore[attr-defined]
-    return intent
+    return intent, recorder
 
 
 async def answer_question(
@@ -107,10 +108,6 @@ async def answer_question(
         HumanMessage(content=user_answer(question, context, diagrams)),
     ]
     try:
-        chat = get_chat("gen")
-        async with _get_sem():
-            resp = await chat.ainvoke(msgs)
-        content = resp.content
-        return content if isinstance(content, str) else str(content)
+        return await invoke_text("gen", msgs)
     except Exception:
         return "Sorry, I couldn't answer that right now. Please try again."

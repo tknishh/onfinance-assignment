@@ -1,17 +1,33 @@
 services:
   kroki:
     image: yuzutech/kroki
-    ports:
-      - "8000:8000"
-  app:
-    build: .
-    env_file: .env
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    env_file:
+      - path: .env
+        required: false
     environment:
-      - KROKI_URL=http://kroki:8000
-    ports:
-      - "8501:8501"
+      KROKI_URL: http://kroki:8000
     volumes:
       - ./data:/app/data
+    ports:
+      # Loopback-only: browser talks via Next.js proxy; avoid exposing the API.
+      - "127.0.0.1:18080:8080"
     depends_on:
       - kroki
-    command: streamlit run app.py --server.address 0.0.0.0
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    environment:
+      API_URL: http://api:8080
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped

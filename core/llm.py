@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from functools import lru_cache
 from typing import Literal, Optional, Type, TypeVar
@@ -80,21 +79,27 @@ class TransientLLMError(Exception):
     pass
 
 
+def _is_transient(exc: BaseException) -> bool:
+    name = type(exc).__name__
+    msg = str(exc).lower()
+    if "rate" in msg or "429" in msg or "503" in msg or "502" in msg:
+        return True
+    if "RateLimit" in name or "APIConnection" in name:
+        return True
+    return False
+
+
 @retry(
     retry=retry_if_exception_type((TransientLLMError, TimeoutError, httpx.HTTPError)),
     wait=wait_exponential(multiplier=1, min=1, max=10),
-    stop=stop_after_attempt(4),
+    stop=stop_after_attempt(3),
     reraise=True,
 )
 async def _ainvoke_with_retry(chat: BaseChatModel, messages: list[BaseMessage]):
     try:
         return await chat.ainvoke(messages)
     except Exception as e:
-        name = type(e).__name__
-        msg = str(e).lower()
-        if "rate" in msg or "429" in msg or "503" in msg or "502" in msg:
-            raise TransientLLMError(str(e)) from e
-        if "RateLimit" in name or "APIConnection" in name:
+        if _is_transient(e):
             raise TransientLLMError(str(e)) from e
         raise
 
@@ -105,50 +110,83 @@ async def invoke_structured(
     messages: list[BaseMessage],
     recorder: Optional[TrajectoryRecorder] = None,
 ) -> T:
+    """Structured LLM call. Method shopping is single-shot; only transient
+    failures retry the whole attempt (max 3), not each method."""
+    chat = get_chat(role)
+
+    @retry(
+        retry=retry_if_exception_type(TransientLLMError),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def _attempt() -> T:
+        async with _get_sem():
+            for method in ("json_schema", "json_mode"):
+                try:
+                    structured = chat.with_structured_output(schema, method=method)
+                    result = await structured.ainvoke(messages)  # type: ignore[arg-type]
+                    if isinstance(result, schema):
+                        if recorder:
+                            recorder.record(messages, result.model_dump_json())
+                        return result
+                    if isinstance(result, dict):
+                        obj = schema.model_validate(result)
+                        if recorder:
+                            recorder.record(messages, obj.model_dump_json())
+                        return obj
+                except Exception as e:
+                    if _is_transient(e):
+                        raise TransientLLMError(str(e)) from e
+                    continue
+
+            try:
+                response = await chat.ainvoke(messages)
+            except Exception as e:
+                if _is_transient(e):
+                    raise TransientLLMError(str(e)) from e
+                raise
+            content = (
+                response.content
+                if isinstance(response.content, str)
+                else str(response.content)
+            )
+            raw = _extract_json(content)
+            obj = schema.model_validate_json(raw)
+            if recorder:
+                recorder.record(messages, obj.model_dump_json())
+            return obj
+
+    return await _attempt()
+
+
+async def invoke_text(
+    role: Literal["gen", "fast"],
+    messages: list[BaseMessage],
+) -> str:
+    """Plain-text LLM call with shared semaphore and transient retries."""
     chat = get_chat(role)
     async with _get_sem():
-        # Try json_schema structured output
-        for method in ("json_schema", "json_mode"):
-            try:
-                structured = chat.with_structured_output(schema, method=method)
-                result = await _ainvoke_with_retry(structured, messages)  # type: ignore[arg-type]
-                if isinstance(result, schema):
-                    if recorder:
-                        recorder.record(messages, result.model_dump_json())
-                    return result
-                if isinstance(result, dict):
-                    obj = schema.model_validate(result)
-                    if recorder:
-                        recorder.record(messages, obj.model_dump_json())
-                    return obj
-            except Exception:
-                continue
-
-        # Fallback: raw text + parse
         response = await _ainvoke_with_retry(chat, messages)
-        content = response.content if isinstance(response.content, str) else str(response.content)
-        raw = _extract_json(content)
-        obj = schema.model_validate_json(raw)
-        if recorder:
-            recorder.record(messages, obj.model_dump_json())
-        return obj
+    content = response.content
+    return content if isinstance(content, str) else str(content)
 
 
-def check_models() -> dict[str, bool]:
+async def check_models() -> dict[str, bool]:
     """Confirm configured model IDs are active on Groq. Never raises."""
     settings = get_settings()
     result = {settings.gen_model: False, settings.fast_model: False}
     if not settings.groq_api_key:
         return result
     try:
-        resp = httpx.get(
-            "https://api.groq.com/openai/v1/models",
-            headers={
-                "Authorization": f"Bearer {settings.groq_api_key}",
-                "Content-Type": "application/json",
-            },
-            timeout=10.0,
-        )
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={
+                    "Authorization": f"Bearer {settings.groq_api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
         if resp.status_code != 200:
             return result
         data = resp.json()

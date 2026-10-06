@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Optional, Tuple
 
 import httpx
 
 from core.cache import get_svg_cache, prompt_hash, set_svg_cache
 from core.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 _client: Optional[httpx.AsyncClient] = None
 
@@ -44,16 +47,22 @@ async def render_svg(code: str) -> Tuple[bool, Optional[str], Optional[str]]:
             set_svg_cache(key, svg)
             return True, svg, None
         if err is not None:
-            return False, None, err
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError):
-        pass
+            primary_err = err
+        else:
+            primary_err = "Kroki render failed"
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+        primary_err = str(e)
 
-    # Fallback to public Kroki
+    fallback = (settings.kroki_fallback_url or "").strip()
+    if not fallback:
+        return False, None, primary_err
+
+    logger.warning("Primary Kroki unreachable; using fallback %s", fallback)
     try:
-        ok, svg, err = await _post_svg(settings.kroki_fallback_url, code)
+        ok, svg, err = await _post_svg(fallback, code)
         if ok and svg:
             set_svg_cache(key, svg)
             return True, svg, None
-        return False, None, err
+        return False, None, err or primary_err
     except Exception as e:
-        return False, None, str(e)
+        return False, None, str(e) or primary_err

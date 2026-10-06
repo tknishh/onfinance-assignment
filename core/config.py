@@ -19,7 +19,9 @@ class Settings(BaseSettings):
     max_concurrency: int = 8
     max_repair_attempts: int = 2
     kroki_url: str = "http://localhost:8000"
-    kroki_fallback_url: str = "https://kroki.io"
+    # Empty = disabled (do not send diagrams to a third party). Set to
+    # https://kroki.io only when intentional.
+    kroki_fallback_url: str = ""
     db_url: str = "sqlite:///data/app.db"
     cache_dir: str = "data/cache"
     judge_enabled: bool = True

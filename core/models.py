@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import Column, JSON
+from sqlalchemy import Column, JSON, UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -25,6 +25,12 @@ class Conversation(SQLModel, table=True):
 
 
 class DesignVersion(SQLModel, table=True):
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", "version_no", name="uq_designversion_conv_verno"
+        ),
+    )
+
     id: Optional[int] = Field(default=None, primary_key=True)
     conversation_id: int = Field(foreign_key="conversation.id", index=True)
     version_no: int

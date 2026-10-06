@@ -7,9 +7,9 @@ from pydantic import BaseModel, Field
 
 
 class GenerateRequest(BaseModel):
-    prompt: str = Field(min_length=10)
-    diagram_types: list[str] = Field(min_length=1)
-    user_id: Optional[str] = None
+    prompt: str = Field(min_length=10, max_length=20_000)
+    diagram_types: list[str] = Field(min_length=1, max_length=20)
+    user_id: Optional[str] = Field(default=None, max_length=128)
     conversation_id: Optional[int] = None
 
 
@@ -110,11 +110,11 @@ class GenerateResponse(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    user_id: str
+    user_id: str = Field(max_length=128)
     version_id: int
     diagram_id: Optional[int] = None
     rating: Literal[-1, 1]
-    comment: Optional[str] = None
+    comment: Optional[str] = Field(default=None, max_length=4_000)
     apply_as_update: bool = False
 
 
@@ -140,10 +140,10 @@ class FollowUpIntent(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    user_id: str
-    message: str = Field(min_length=1)
+    user_id: str = Field(max_length=128)
+    message: str = Field(min_length=1, max_length=20_000)
     conversation_id: Optional[int] = None
-    diagram_types: list[str] = Field(default_factory=list)
+    diagram_types: list[str] = Field(default_factory=list, max_length=20)
 
 
 class MessageOut(BaseModel):
@@ -183,4 +183,5 @@ class TimelineOut(BaseModel):
 
 
 class RenderRequest(BaseModel):
-    plantuml: str
+    plantuml: str = Field(min_length=1, max_length=200_000)
+    user_id: str = Field(max_length=128)
